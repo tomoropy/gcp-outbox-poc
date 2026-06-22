@@ -35,29 +35,46 @@ gcloud spanner databases ddl update gcp-outbox-poc \
   --ddl-file=migrations/schema.sql
 ```
 
-## Local run
+## Local run with Docker Compose
 
-Spanner emulatorか実Spannerを使います。
+まずはSpanner Emulatorで検証します。
 
 ```bash
-cp .env.example .env
-PORT=8081 go run ./cmd/simulator
-PORT=8080 go run ./cmd/api
-go run ./cmd/worker
+docker compose up --build
 ```
 
-Billingを作成します。
+Billingを作成します。`webhookUrl`はworkerコンテナから見えるCompose service名を指定します。
 
 ```bash
 curl -X POST localhost:8080/billings \
   -H 'content-type: application/json' \
-  -d '{"tenantId":"tenant-demo","amount":1200,"dueInSeconds":3600,"webhookUrl":"http://localhost:8081/webhook"}'
+  -d '{"tenantId":"tenant-demo","amount":1200,"dueInSeconds":3600,"webhookUrl":"http://simulator:8080/webhook"}'
 ```
 
 期限切れjobを手動実行します。
 
 ```bash
-go run ./cmd/jobs/expire_billing
+docker compose run --rm expire-billing
+```
+
+cleanup jobを手動実行します。
+
+```bash
+docker compose run --rm outbox-cleanup
+```
+
+Spanner Emulatorだけを使ってGoを直接起動する場合は、`SPANNER_EMULATOR_HOST`を指定します。
+
+```bash
+docker compose up spanner spanner-init
+export SPANNER_EMULATOR_HOST=localhost:9010
+export GCP_PROJECT_ID=sandbox-500107
+export SPANNER_INSTANCE_ID=gcp-outbox-poc
+export SPANNER_DATABASE_ID=gcp-outbox-poc
+
+PORT=8081 go run ./cmd/simulator
+PORT=8080 go run ./cmd/api
+go run ./cmd/worker
 ```
 
 ## GCP PoC target

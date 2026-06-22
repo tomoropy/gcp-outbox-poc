@@ -46,4 +46,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - run: docker compose config
+
       - run: docker build -t gcp-outbox-poc:ci .

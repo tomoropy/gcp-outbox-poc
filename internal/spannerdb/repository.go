@@ -385,7 +385,7 @@ func readBillingInTx(ctx context.Context, tx *spanner.ReadWriteTransaction, bill
 
 func decodeJob(row *spanner.Row) (*OutboxJob, error) {
 	var job OutboxJob
-	var payload spanner.NullJSON
+	var payload spanner.NullString
 	var lockedBy spanner.NullString
 	var lockedUntil spanner.NullTime
 	var lastError spanner.NullString
@@ -409,11 +409,7 @@ func decodeJob(row *spanner.Row) (*OutboxJob, error) {
 		return nil, err
 	}
 	if payload.Valid {
-		b, err := json.Marshal(payload.Value)
-		if err != nil {
-			return nil, err
-		}
-		job.Payload = b
+		job.Payload = json.RawMessage(payload.StringVal)
 	}
 	if lockedBy.Valid {
 		job.LockedBy = &lockedBy.StringVal
@@ -445,12 +441,10 @@ func outboxColumns() []string {
 }
 
 func outboxValues(job *OutboxJob) []any {
-	var payload any
+	var payload *string
 	if len(job.Payload) > 0 {
-		var decoded any
-		if err := json.Unmarshal(job.Payload, &decoded); err == nil {
-			payload = decoded
-		}
+		payloadValue := string(job.Payload)
+		payload = &payloadValue
 	}
 	return []any{
 		job.JobID,

@@ -22,7 +22,7 @@ CREATE TABLE OutboxJobs (
   JobId STRING(36) NOT NULL,
   JobType STRING(64) NOT NULL,
   AggregateId STRING(36) NOT NULL,
-  Payload JSON,
+  Payload STRING(MAX),
   Status STRING(32) NOT NULL,
   AttemptCount INT64 NOT NULL,
   MaxAttempts INT64 NOT NULL,

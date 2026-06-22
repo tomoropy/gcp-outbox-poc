@@ -1,0 +1,90 @@
+services:
+  spanner:
+    image: gcr.io/cloud-spanner-emulator/emulator:latest
+    ports:
+      - "9010:9010"
+      - "9020:9020"
+
+  spanner-init:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+    depends_on:
+      - spanner
+    environment:
+      CLOUDSDK_CORE_PROJECT: sandbox-500107
+      CLOUDSDK_AUTH_DISABLE_CREDENTIALS: "true"
+      CLOUDSDK_API_ENDPOINT_OVERRIDES_SPANNER: http://spanner:9020/
+    volumes:
+      - ./migrations:/workspace/migrations:ro
+      - ./scripts:/workspace/scripts:ro
+    working_dir: /workspace
+    entrypoint: ["/bin/bash", "/workspace/scripts/init-spanner-emulator.sh"]
+
+  api:
+    build: .
+    command: ["/app/api"]
+    depends_on:
+      spanner-init:
+        condition: service_completed_successfully
+    environment:
+      GCP_PROJECT_ID: sandbox-500107
+      SPANNER_INSTANCE_ID: gcp-outbox-poc
+      SPANNER_DATABASE_ID: gcp-outbox-poc
+      SPANNER_EMULATOR_HOST: spanner:9010
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+
+  worker:
+    build: .
+    command: ["/app/worker"]
+    depends_on:
+      spanner-init:
+        condition: service_completed_successfully
+      simulator:
+        condition: service_started
+    environment:
+      GCP_PROJECT_ID: sandbox-500107
+      SPANNER_INSTANCE_ID: gcp-outbox-poc
+      SPANNER_DATABASE_ID: gcp-outbox-poc
+      SPANNER_EMULATOR_HOST: spanner:9010
+      WORKER_ID: docker-worker-1
+      WORKER_BATCH_SIZE: "10"
+      WORKER_POLL_INTERVAL: 1s
+      OUTBOX_LEASE_SECONDS: "30"
+
+  simulator:
+    build: .
+    command: ["/app/simulator"]
+    environment:
+      GCP_PROJECT_ID: sandbox-500107
+      PORT: "8080"
+    ports:
+      - "8081:8080"
+
+  expire-billing:
+    build: .
+    command: ["/app/expire_billing"]
+    profiles: ["jobs"]
+    depends_on:
+      spanner-init:
+        condition: service_completed_successfully
+    environment:
+      GCP_PROJECT_ID: sandbox-500107
+      SPANNER_INSTANCE_ID: gcp-outbox-poc
+      SPANNER_DATABASE_ID: gcp-outbox-poc
+      SPANNER_EMULATOR_HOST: spanner:9010
+      EXPIRE_BILLING_LOOKBACK: 24h
+
+  outbox-cleanup:
+    build: .
+    command: ["/app/outbox_cleanup"]
+    profiles: ["jobs"]
+    depends_on:
+      spanner-init:
+        condition: service_completed_successfully
+    environment:
+      GCP_PROJECT_ID: sandbox-500107
+      SPANNER_INSTANCE_ID: gcp-outbox-poc
+      SPANNER_DATABASE_ID: gcp-outbox-poc
+      SPANNER_EMULATOR_HOST: spanner:9010
+      OUTBOX_CLEANUP_RETENTION: 720h

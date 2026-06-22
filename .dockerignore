@@ -1,0 +1,10 @@
+.git
+.github
+.terraform
+deploy/terraform/.terraform
+*.tfstate
+*.tfstate.*
+bin
+tmp
+.env
+.DS_Store
