@@ -10,7 +10,7 @@ services:
     depends_on:
       - spanner
     environment:
-      CLOUDSDK_CORE_PROJECT: sandbox-500107
+      CLOUDSDK_CORE_PROJECT: demo-gcp-project
       CLOUDSDK_AUTH_DISABLE_CREDENTIALS: "true"
       CLOUDSDK_API_ENDPOINT_OVERRIDES_SPANNER: http://spanner:9020/
     volumes:
@@ -26,7 +26,7 @@ services:
       spanner-init:
         condition: service_completed_successfully
     environment:
-      GCP_PROJECT_ID: sandbox-500107
+      GCP_PROJECT_ID: demo-gcp-project
       SPANNER_INSTANCE_ID: gcp-outbox-poc
       SPANNER_DATABASE_ID: gcp-outbox-poc
       SPANNER_EMULATOR_HOST: spanner:9010
@@ -43,7 +43,7 @@ services:
       simulator:
         condition: service_started
     environment:
-      GCP_PROJECT_ID: sandbox-500107
+      GCP_PROJECT_ID: demo-gcp-project
       SPANNER_INSTANCE_ID: gcp-outbox-poc
       SPANNER_DATABASE_ID: gcp-outbox-poc
       SPANNER_EMULATOR_HOST: spanner:9010
@@ -60,7 +60,7 @@ services:
     build: .
     command: ["/app/simulator"]
     environment:
-      GCP_PROJECT_ID: sandbox-500107
+      GCP_PROJECT_ID: demo-gcp-project
       PORT: "8080"
       SIMULATOR_FORCE_STATUS: "${SIMULATOR_FORCE_STATUS:-}"
       SIMULATOR_FAIL_FIRST_N: "${SIMULATOR_FAIL_FIRST_N:-0}"
@@ -76,7 +76,7 @@ services:
       spanner-init:
         condition: service_completed_successfully
     environment:
-      GCP_PROJECT_ID: sandbox-500107
+      GCP_PROJECT_ID: demo-gcp-project
       SPANNER_INSTANCE_ID: gcp-outbox-poc
       SPANNER_DATABASE_ID: gcp-outbox-poc
       SPANNER_EMULATOR_HOST: spanner:9010
@@ -90,7 +90,7 @@ services:
       spanner-init:
         condition: service_completed_successfully
     environment:
-      GCP_PROJECT_ID: sandbox-500107
+      GCP_PROJECT_ID: demo-gcp-project
       SPANNER_INSTANCE_ID: gcp-outbox-poc
       SPANNER_DATABASE_ID: gcp-outbox-poc
       SPANNER_EMULATOR_HOST: spanner:9010

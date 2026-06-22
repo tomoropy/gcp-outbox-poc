@@ -28,7 +28,7 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		ProjectID:              getenv("GCP_PROJECT_ID", "sandbox-500107"),
+		ProjectID:              getenv("GCP_PROJECT_ID", "demo-gcp-project"),
 		SpannerInstance:        getenv("SPANNER_INSTANCE_ID", "gcp-outbox-poc"),
 		SpannerDatabase:        getenv("SPANNER_DATABASE_ID", "gcp-outbox-poc"),
 		Port:                   getenv("PORT", "8080"),

@@ -6,6 +6,7 @@ cd "${ROOT_DIR}"
 
 API_URL="${API_URL:-http://localhost:8080}"
 SIMULATOR_URL="${SIMULATOR_URL:-http://localhost:8081}"
+GCP_PROJECT_ID="${GCP_PROJECT_ID:-demo-gcp-project}"
 
 cleanup() {
   docker compose down --remove-orphans >/dev/null 2>&1 || true
@@ -35,7 +36,7 @@ create_billing() {
 
 create_billing_json() {
   local amount="${1:-1200}"
-  local notify_email="${2:-merchant@example.com}"
+  local notify_email="${2:-merchant@example.test}"
   curl -fsS -X POST "${API_URL}/billings" \
     -H 'content-type: application/json' \
     -d "{\"tenantId\":\"tenant-demo\",\"amount\":${amount},\"dueInSeconds\":3600,\"webhookUrl\":\"http://simulator:8080/webhook\",\"notifyEmail\":\"${notify_email}\"}"
@@ -54,7 +55,7 @@ spanner_count() {
   local sql="$1"
   docker compose run --rm --entrypoint gcloud spanner-init \
     spanner databases execute-sql gcp-outbox-poc \
-    --project=sandbox-500107 \
+    --project="${GCP_PROJECT_ID}" \
     --instance=gcp-outbox-poc \
     --sql="${sql}" | awk 'NF { value=$NF } END { print value }'
 }
@@ -171,7 +172,7 @@ scenario_payment_webhook() {
   wait_http "${SIMULATOR_URL}/healthz"
 
   local billing_json
-  billing_json="$(create_billing_json 2200 merchant@example.com)"
+  billing_json="$(create_billing_json 2200 merchant@example.test)"
   local billing_id
   billing_id="$(python3 -c "import json,sys; print(json.load(sys.stdin)['billingId'])" <<<"${billing_json}")"
 

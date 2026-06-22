@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ID="${CLOUDSDK_CORE_PROJECT:-sandbox-500107}"
+PROJECT_ID="${CLOUDSDK_CORE_PROJECT:-demo-gcp-project}"
 INSTANCE_ID="${SPANNER_INSTANCE_ID:-gcp-outbox-poc}"
 DATABASE_ID="${SPANNER_DATABASE_ID:-gcp-outbox-poc}"
 

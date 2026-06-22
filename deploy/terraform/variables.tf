@@ -1,6 +1,5 @@
 variable "project_id" {
   type        = string
-  default     = "sandbox-500107"
   description = "GCP project ID"
 }
 
