@@ -17,7 +17,7 @@ variable "image" {
 
 variable "spanner_processing_units" {
   type        = number
-  default     = 300
+  default     = 100
   description = "Spanner processing units"
 }
 

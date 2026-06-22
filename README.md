@@ -62,12 +62,23 @@ go run ./cmd/jobs/expire_billing
 
 ## GCP PoC target
 
-- Spanner: Regional Standard 300 PU
+- Spanner: Regional Standard 100 PU
 - Cloud Run Service: api / simulator, min instances 0
 - Cloud Run Worker Pool: worker, instance_count 1
 - Cloud Run Jobs: expire_billing / outbox_cleanup
 - Cloud Scheduler: expire_billing起動
 - LB / PubSub / Cloud Tasks は使わない
+
+## CI/CD
+
+今のPoCでは、GitHub ActionsでCIのみ実行します。
+
+- `go test ./...`
+- `terraform fmt -check`
+- `terraform validate`
+- `docker build`
+
+GCPへdeployするCDは、Workload Identity Federation用のprovider/service accountを作ってから追加します。
 
 ## Deploy sketch
 
