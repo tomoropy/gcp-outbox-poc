@@ -2,74 +2,74 @@
 
 Cloud Run Worker Pools + Cloud Spanner + Outbox pattern の検証用PoCです。
 
-HTTP request path から非同期処理を切り離し、DB transactionでOutbox jobを作成し、常駐workerがpollingして外部HTTP webhookなどを実行する構成を試します。Pub/SubやCloud Tasksを使わず、Cloud Run Worker PoolsとSpannerだけでどこまで扱えるかを見るための小さなサンプルです。
+HTTP request path から非同期処理を切り離し、DB transaction で Outbox job を作成し、常駐 worker が polling して外部 HTTP webhook などを実行する構成を試します。Pub/Sub や Cloud Tasks を使わず、Cloud Run Worker Pools と Spanner だけでどこまで扱えるかを見るための小さなサンプルです。
 
-## What this PoC verifies
+## このPoCで確認できること
 
 このPoCでは、以下を確認できます。
 
-- Cloud Run ServiceはHTTP APIとして使い、min instances 0でscale-to-zeroできる
-- Cloud Run Worker Poolsで常駐Outbox consumerを動かせる
-- Cloud SpannerでOutbox jobのclaim / lease / retry / failed / completedを表現できる
-- 複数workerが同時にpollingしても、同じjobを二重claimしない
-- workerがjobをclaimした後に落ちても、lease timeout後に別workerが再取得できる
-- 指数バックオフと最大試行回数でretryを制御できる
-- 期限切れbilling検出や古いOutbox data削除をCloud Run Jobsで分離できる
-- 入金・収納通知のような外部webhookを受け、DB更新と後続通知のenqueueを同一transactionで扱える
-- 同じ外部eventを複数回受けても、idempotency keyで二重処理を防げる
+- Cloud Run Service を HTTP API として使い、min instances 0 で scale-to-zero できる
+- Cloud Run Worker Pools で常駐 Outbox consumer を動かせる
+- Cloud Spanner で Outbox job の claim / lease / retry / failed / completed を表現できる
+- 複数 worker が同時に polling しても、同じ job を二重 claim しない
+- worker が job を claim した後に落ちても、lease timeout 後に別 worker が再取得できる
+- 指数バックオフと最大試行回数で retry を制御できる
+- 期限切れ billing 検出や古い Outbox data 削除を Cloud Run Jobs で分離できる
+- 入金・収納通知のような外部 webhook を受け、DB 更新と後続通知の enqueue を同一 transaction で扱える
+- 同じ外部 event を複数回受けても、idempotency key で二重処理を防げる
 
-## Architecture
+## アーキテクチャ
 
 ```text
 Client / external provider
   -> Cloud Run Service: api
-       - create billing
-       - receive payment notification webhook
-       - write domain data and outbox jobs in one Spanner transaction
+       - billingを作成する
+       - payment notification webhookを受ける
+       - domain dataとoutbox jobsを1つのSpanner transactionで書き込む
 
 Cloud Run Worker Pool: worker
-  -> poll ready outbox jobs from Spanner
-  -> claim jobs with lease
-  -> send merchant webhook / record mail delivery
-  -> mark completed or schedule retry
+  -> Spannerからreadyなoutbox jobsをpollingする
+  -> lease付きでjobをclaimする
+  -> merchant webhook送信 / mail delivery記録を行う
+  -> completedにする、またはretryを予約する
 
 Cloud Run Jobs
-  -> expire-billing: detect expired billings and enqueue webhook jobs
-  -> outbox-cleanup: delete old completed jobs
+  -> expire-billing: 期限切れbillingを検出してwebhook jobをenqueueする
+  -> outbox-cleanup: 古いcompleted jobsを削除する
 
 Cloud Run Service: simulator
-  -> local/demo webhook receiver
-  -> can intentionally fail first N requests for retry testing
+  -> local/demo用のwebhook receiver
+  -> retry検証のため、最初のN回だけ意図的に失敗させられる
 ```
 
-The service names are intentionally generic. This repository is a public PoC and does not contain production business logic, production credentials, or private infrastructure details.
+service名やdomain名は意図的に汎用的にしています。このrepositoryはpublic PoCであり、本番の業務ロジック・本番credential・非公開インフラ情報は含めません。
 
-## Directory structure
+## ディレクトリ構成
 
 ```text
 cmd/api                         HTTP API
 cmd/worker                      Outbox polling worker
 cmd/simulator                   Webhook receiver simulator
-cmd/jobs/expire_billing         Periodic expired-billing job
-cmd/jobs/outbox_cleanup         Periodic cleanup job
+cmd/jobs/expire_billing         期限切れbillingを検出する定期job
+cmd/jobs/outbox_cleanup         古いOutbox dataを削除する定期job
 
-internal/config                 Environment variable loading
-internal/spannerdb              Spanner repository and Outbox logic
+internal/config                 環境変数の読み込み
+internal/spannerdb              Spanner repositoryとOutbox logic
 services/*                      Application logic
 migrations/schema.sql           Spanner schema
-deploy/terraform                Minimal GCP resources
+deploy/terraform                最小限のGCP resources
 scripts/local-outbox-scenarios.sh
 ```
 
-## Local run with Docker Compose
+## Docker Composeでローカル実行
 
-Local development uses the Cloud Spanner Emulator. No GCP credentials are required for the local scenario tests.
+ローカル開発では Cloud Spanner Emulator を使います。local scenario test には GCP credential は不要です。
 
 ```bash
 docker compose up --build
 ```
 
-Create a billing. `webhookUrl` must be reachable from the worker container, so the Docker Compose service name is used here.
+billingを作成します。`webhookUrl` は worker container から到達できる必要があるため、Docker Compose の service 名を指定します。
 
 ```bash
 curl -X POST localhost:8080/billings \
@@ -77,7 +77,7 @@ curl -X POST localhost:8080/billings \
   -d '{"tenantId":"tenant-demo","amount":1200,"dueInSeconds":3600,"webhookUrl":"http://simulator:8080/webhook","notifyEmail":"merchant@example.test"}'
 ```
 
-Simulate an incoming payment notification webhook. The API stores the notification idempotently, updates the billing to `paid`, and enqueues both a merchant `billing.paid` webhook job and a mail job.
+入金・収納通知 webhook を模擬します。API は通知を冪等に保存し、billing を `paid` に更新し、merchant 向け `billing.paid` webhook job と mail job を enqueue します。
 
 ```bash
 BILLING_ID="$(curl -fsS -X POST localhost:8080/billings \
@@ -90,31 +90,31 @@ curl -X POST localhost:8080/bank/webhooks/payment \
   -d "{\"provider\":\"demo-bank\",\"eventId\":\"bank-event-001\",\"billingId\":\"${BILLING_ID}\",\"amount\":1200}"
 ```
 
-Run the periodic jobs manually.
+定期jobを手動実行します。
 
 ```bash
 docker compose run --rm expire-billing
 docker compose run --rm outbox-cleanup
 ```
 
-## Local scenario test
+## ローカルシナリオテスト
 
-Run the full local verification suite:
+ローカルで一通りの検証をまとめて実行します。
 
 ```bash
 scripts/local-outbox-scenarios.sh
 ```
 
-The script verifies:
+このscriptでは以下を確認します。
 
-- retry: simulator returns 503 for the first two webhook requests, and the worker retries with backoff
-- multi-worker: three workers process ten jobs without duplicate delivery
-- lease-timeout: a claimed job is picked up again after the first worker stops
-- payment-webhook: the same incoming payment event is submitted twice, but only one payment notification, one merchant webhook, and one mail delivery are processed
+- retry: simulator が最初の2回だけ 503 を返し、worker が backoff 後に再実行する
+- multi-worker: 3つの worker で10件処理しても、同じ job が二重 delivery されない
+- lease-timeout: claim 済み job が、最初の worker 停止後に再取得される
+- payment-webhook: 同じ incoming payment event を2回送っても、payment notification / merchant webhook / mail delivery が1回だけ処理される
 
-## Run without Docker Compose app containers
+## Spanner EmulatorだけDockerで動かす場合
 
-You can also run the Go processes directly while using only the Spanner Emulator container.
+Spanner Emulator container だけを使い、Go process を直接起動することもできます。
 
 ```bash
 docker compose up spanner spanner-init
@@ -129,32 +129,32 @@ PORT=8080 go run ./cmd/api
 go run ./cmd/worker
 ```
 
-## GCP PoC target
+## GCP PoCの構成
 
-The Terraform under `deploy/terraform` creates a minimal GCP environment:
+`deploy/terraform` は最小限の GCP environment を作成します。
 
-- Cloud Spanner instance: Regional, 100 processing units by default
-- Cloud Spanner database and schema
+- Cloud Spanner instance: Regional、default 100 processing units
+- Cloud Spanner database と schema
 - Artifact Registry repository
 - Cloud Run Service: `api`
 - Cloud Run Service: `simulator`
 - Cloud Run Worker Pool: `worker`
 - Cloud Run Jobs: `expire-billing`, `outbox-cleanup`
-- Optional Cloud Scheduler for the periodic jobs
-- IAM service accounts for api / worker / jobs
+- 定期job用の Cloud Scheduler。defaultでは無効
+- api / worker / jobs 用の IAM service accounts
 
-It intentionally does not create a Load Balancer, Pub/Sub topic, or Cloud Tasks queue.
+Load Balancer、Pub/Sub topic、Cloud Tasks queue は意図的に作成しません。
 
-## Deploy sketch
+## Deploy手順の概要
 
-Set your own project ID first.
+まず、自分の GCP project ID を設定します。
 
 ```bash
 export PROJECT_ID="your-gcp-project-id"
 export REGION="asia-northeast1"
 ```
 
-Create the Artifact Registry repository first, because the application image must be pushed before the Cloud Run resources can be deployed.
+Cloud Run resources を作る前に application image を push する必要があるため、最初に Artifact Registry repository だけを作成します。
 
 ```bash
 cd deploy/terraform
@@ -166,7 +166,7 @@ terraform apply \
   -var="image=${REGION}-docker.pkg.dev/${PROJECT_ID}/gcp-outbox-poc/app:bootstrap"
 ```
 
-Build and push the image.
+image を build / push します。
 
 ```bash
 cd ../..
@@ -177,7 +177,7 @@ docker build --platform linux/amd64 -t "${IMAGE}" .
 docker push "${IMAGE}"
 ```
 
-Apply the full Terraform configuration.
+Terraform全体をapplyします。
 
 ```bash
 cd deploy/terraform
@@ -187,7 +187,7 @@ terraform apply \
   -var="image=${IMAGE}"
 ```
 
-Cloud Run Service is authenticated by default. Use an identity token for manual smoke tests.
+Cloud Run Service は default では認証付きです。手動 smoke test では identity token を付けて叩きます。
 
 ```bash
 API_URL="$(terraform output -raw api_url)"
@@ -206,9 +206,9 @@ curl -X POST "${API_URL}/bank/webhooks/payment" \
   -d "{\"provider\":\"demo-bank\",\"eventId\":\"bank-event-001\",\"billingId\":\"${BILLING_ID}\",\"amount\":1200}"
 ```
 
-## CI checks
+## CIで確認したいこと
 
-Useful checks for this repository:
+このrepositoryでは、以下を確認するとよいです。
 
 ```bash
 go test ./...
@@ -218,23 +218,23 @@ terraform -chdir=deploy/terraform fmt -check -recursive
 terraform -chdir=deploy/terraform validate
 ```
 
-## Public repository safety notes
+## public repositoryとしての安全メモ
 
-- No production credentials, service account keys, private keys, or `.env` files should be committed.
-- `.env` and `.env.*` are ignored; `.env.example` contains only dummy values.
-- Terraform requires `project_id` to be passed explicitly and does not hard-code a real project ID.
-- Local Docker Compose uses `demo-gcp-project` with the Spanner Emulator only.
-- The sample email domain is `example.test`.
-- The webhook secret field exists only to demonstrate payload shape; do not put real secrets in sample commands.
+- 本番credential、service account key、private key、`.env` file はcommitしない
+- `.env` と `.env.*` は ignore 対象。`.env.example` には dummy value のみを書く
+- Terraform は `project_id` の明示指定を必須にし、実project IDをhard-codeしない
+- Local Docker Compose は Spanner Emulator 用の `demo-gcp-project` だけを使う
+- sample email domain は `example.test` を使う
+- webhook secret field は payload shape の例示用。sample command に実secretを入れない
 
-## Production hardening ideas
+## 本番利用に向けて追加で検討すること
 
-This PoC intentionally keeps some production concerns out of scope. Before using this pattern for a real external webhook path, consider adding:
+このPoCでは、本番運用に必要な要素の一部をあえてscope外にしています。実際の外部 webhook path で使う場合は、少なくとも以下を検討します。
 
-- provider-specific signature verification
-- raw body preservation and timestamp/replay protection
-- explicit idempotency key strategy per provider
-- alerting for backlog age, failed jobs, and retry spikes
+- providerごとの署名検証
+- raw body 保存と timestamp / replay protection
+- providerごとの明示的な idempotency key strategy
+- backlog age、failed jobs、retry spike のalert
 - dead-letter inspection workflow
-- schema migration strategy that does not replace the database
-- separate public/private API binaries or containers if the inbound trust boundary differs
+- database replacementを避けるschema migration strategy
+- inbound trust boundary が異なる場合の public/private API binary または container 分離
