@@ -280,6 +280,11 @@ func (r *Repository) claimOne(ctx context.Context, jobID, workerID string, lease
 	var claimed *OutboxJob
 
 	_, err := r.client.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
+		// Spanner may retry this callback on transaction aborts. Reset the
+		// externally observed result on every attempt so a claim from an aborted
+		// attempt is not accidentally returned to the worker.
+		claimed = nil
+
 		job, err := readJobInTx(ctx, tx, jobID)
 		if err != nil {
 			return err

@@ -23,7 +23,19 @@ variable "spanner_processing_units" {
 variable "worker_instance_count" {
   type        = number
   default     = 1
-  description = "Cloud Run Worker Pool instances"
+  description = "Cloud Run Worker Pool manual instances"
+}
+
+variable "worker_batch_size" {
+  type        = number
+  default     = 10
+  description = "Outbox jobs claimed per worker tick"
+}
+
+variable "worker_process_delay" {
+  type        = string
+  default     = "0s"
+  description = "Artificial per-job processing delay for load/scaling experiments"
 }
 
 variable "enable_scheduler" {

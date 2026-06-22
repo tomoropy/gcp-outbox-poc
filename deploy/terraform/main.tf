@@ -219,7 +219,11 @@ resource "google_cloud_run_v2_worker_pool" "worker" {
       }
       env {
         name  = "WORKER_BATCH_SIZE"
-        value = "10"
+        value = tostring(var.worker_batch_size)
+      }
+      env {
+        name  = "WORKER_PROCESS_DELAY"
+        value = var.worker_process_delay
       }
     }
   }

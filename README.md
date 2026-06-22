@@ -14,6 +14,7 @@ HTTP request path から非同期処理を切り離し、DB transaction で Outb
 - 複数 worker が同時に polling しても、同じ job を二重 claim しない
 - worker が job を claim した後に落ちても、lease timeout 後に別 worker が再取得できる
 - 指数バックオフと最大試行回数で retry を制御できる
+- Worker Pool の manual instance count を増やすことで、backlog 処理を水平に伸ばせる
 - 期限切れ billing 検出や古い Outbox data 削除を Cloud Run Jobs で分離できる
 - 入金・収納通知のような外部 webhook を受け、DB 更新と後続通知の enqueue を同一 transaction で扱える
 - 同じ外部 event を複数回受けても、idempotency key で二重処理を防げる
@@ -144,6 +145,28 @@ go run ./cmd/worker
 - api / worker / jobs 用の IAM service accounts
 
 Load Balancer、Pub/Sub topic、Cloud Tasks queue は意図的に作成しません。
+
+## Worker Pool scalingの検証メモ
+
+このPoCでは、Worker Pool の instance 数を手動で増やした場合の水平処理を検証しています。
+
+```bash
+terraform apply \
+  -var="project_id=${PROJECT_ID}" \
+  -var="image=${IMAGE}" \
+  -var="worker_instance_count=3" \
+  -var="worker_batch_size=1" \
+  -var="worker_process_delay=2s"
+```
+
+この設定で Outbox backlog を積むと、3つの worker が並列に job を claim して処理します。GCP上の検証では、60件の backlog を3 workerで処理し、`WebhookDeliveries` の重複が0件であることを確認しました。
+
+一方で、Cloud Run Worker Pools の automatic scaling はこのPoCでは採用していません。Terraform provider schema上は `AUTOMATIC` が見えますが、検証時点では期待通りに worker が起動せず、実リソース上は `manualInstanceCount: 0` 相当になりました。そのため、現時点では以下のどちらかを前提にするのが安全です。
+
+- backlog監視を見て `worker_instance_count` を明示的に変更する
+- 通常時は1台、ピーク時だけ手動または別の制御で増やす
+
+また、Spanner の `ReadWriteTransaction` callback は retry されることがあります。callback内で外部変数へ結果を書き出す場合、abortされた試行の値が残ると二重処理につながるため注意が必要です。このPoCでは、claim結果を各transaction attemptの先頭でresetすることで、abort済みattemptのclaim結果をworkerへ返さないようにしています。
 
 ## Deploy手順の概要
 
