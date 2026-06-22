@@ -126,7 +126,7 @@ imageをbuild/pushします。
 ```bash
 IMAGE=asia-northeast1-docker.pkg.dev/sandbox-500107/gcp-outbox-poc/app:$(git rev-parse --short HEAD)
 gcloud auth configure-docker asia-northeast1-docker.pkg.dev
-docker build -t "$IMAGE" .
+docker build --platform linux/amd64 -t "$IMAGE" .
 docker push "$IMAGE"
 ```
 

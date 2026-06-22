@@ -42,10 +42,11 @@ resource "google_spanner_instance" "main" {
 }
 
 resource "google_spanner_database" "main" {
-  instance = google_spanner_instance.main.name
-  name     = local.spanner_database
+  instance            = google_spanner_instance.main.name
+  name                = local.spanner_database
+  deletion_protection = false
 
-  ddl = split(";\n", trimspace(file("${path.module}/../../migrations/schema.sql")))
+  ddl = split(";\n", trimsuffix(trimspace(file("${path.module}/../../migrations/schema.sql")), ";"))
 }
 
 resource "google_service_account" "api" {
@@ -89,10 +90,35 @@ resource "google_spanner_database_iam_member" "job" {
   member   = "serviceAccount:${google_service_account.job.email}"
 }
 
+resource "google_project_iam_member" "api_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_project_iam_member" "worker_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.worker.email}"
+}
+
+resource "google_project_iam_member" "job_metric_writer" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.job.email}"
+}
+
 resource "google_cloud_run_v2_service" "api" {
-  name     = "${local.name}-api"
-  location = var.region
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  name                = "${local.name}-api"
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_ALL"
+  deletion_protection = false
+
+  lifecycle {
+    ignore_changes = [
+      scaling,
+    ]
+  }
 
   template {
     service_account = google_service_account.api.email
@@ -123,9 +149,16 @@ resource "google_cloud_run_v2_service" "api" {
 }
 
 resource "google_cloud_run_v2_service" "simulator" {
-  name     = "${local.name}-simulator"
-  location = var.region
-  ingress  = "INGRESS_TRAFFIC_ALL"
+  name                = "${local.name}-simulator"
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_ALL"
+  deletion_protection = false
+
+  lifecycle {
+    ignore_changes = [
+      scaling,
+    ]
+  }
 
   template {
     service_account = google_service_account.simulator.email
@@ -138,13 +171,33 @@ resource "google_cloud_run_v2_service" "simulator" {
     containers {
       image   = var.image
       command = ["/app/simulator"]
+
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = var.project_id
+      }
     }
   }
 }
 
+resource "google_cloud_run_v2_service_iam_member" "simulator_public_invoker" {
+  project  = var.project_id
+  location = google_cloud_run_v2_service.simulator.location
+  name     = google_cloud_run_v2_service.simulator.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
 resource "google_cloud_run_v2_worker_pool" "worker" {
-  name     = "${local.name}-worker"
-  location = var.region
+  name                = "${local.name}-worker"
+  location            = var.region
+  deletion_protection = false
+
+  lifecycle {
+    ignore_changes = [
+      scaling[0].scaling_mode,
+    ]
+  }
 
   template {
     service_account = google_service_account.worker.email
@@ -179,8 +232,9 @@ resource "google_cloud_run_v2_worker_pool" "worker" {
 }
 
 resource "google_cloud_run_v2_job" "expire_billing" {
-  name     = "${local.name}-expire-billing"
-  location = var.region
+  name                = "${local.name}-expire-billing"
+  location            = var.region
+  deletion_protection = false
 
   template {
     template {
@@ -208,8 +262,9 @@ resource "google_cloud_run_v2_job" "expire_billing" {
 }
 
 resource "google_cloud_run_v2_job" "outbox_cleanup" {
-  name     = "${local.name}-outbox-cleanup"
-  location = var.region
+  name                = "${local.name}-outbox-cleanup"
+  location            = var.region
+  deletion_protection = false
 
   template {
     template {
