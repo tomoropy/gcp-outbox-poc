@@ -8,6 +8,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/worker ./cmd/worker
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/simulator ./cmd/simulator
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/expire_billing ./cmd/jobs/expire_billing
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/outbox_cleanup ./cmd/jobs/outbox_cleanup
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/outbox_autoscaler ./cmd/jobs/outbox_autoscaler
 
 FROM gcr.io/distroless/static-debian12
 WORKDIR /app

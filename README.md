@@ -37,6 +37,7 @@ Cloud Run Worker Pool: worker
 Cloud Run Jobs
   -> expire-billing: 期限切れbillingを検出してwebhook jobをenqueueする
   -> outbox-cleanup: 古いcompleted jobsを削除する
+  -> outbox-autoscaler: Outbox backlogを見てWorker Poolのmanual instance countを調整する
 
 Cloud Run Service: simulator
   -> local/demo用のwebhook receiver
@@ -53,6 +54,7 @@ cmd/worker                      Outbox polling worker
 cmd/simulator                   Webhook receiver simulator
 cmd/jobs/expire_billing         期限切れbillingを検出する定期job
 cmd/jobs/outbox_cleanup         古いOutbox dataを削除する定期job
+cmd/jobs/outbox_autoscaler      Outbox backlogに応じてWorker Pool台数を変更するjob
 
 internal/config                 環境変数の読み込み
 internal/spannerdb              Spanner repositoryとOutbox logic
@@ -140,7 +142,7 @@ go run ./cmd/worker
 - Cloud Run Service: `api`
 - Cloud Run Service: `simulator`
 - Cloud Run Worker Pool: `worker`
-- Cloud Run Jobs: `expire-billing`, `outbox-cleanup`
+- Cloud Run Jobs: `expire-billing`, `outbox-cleanup`, `outbox-autoscaler`
 - 定期job用の Cloud Scheduler。defaultでは無効
 - api / worker / jobs 用の IAM service accounts
 
@@ -167,6 +169,30 @@ terraform apply \
 - 通常時は1台、ピーク時だけ手動または別の制御で増やす
 
 また、Spanner の `ReadWriteTransaction` callback は retry されることがあります。callback内で外部変数へ結果を書き出す場合、abortされた試行の値が残ると二重処理につながるため注意が必要です。このPoCでは、claim結果を各transaction attemptの先頭でresetすることで、abort済みattemptのclaim結果をworkerへ返さないようにしています。
+
+### custom autoscaler job
+
+Worker Pool 自体の backlog-driven autoscaling が期待通りに使えなかったため、このPoCでは小さな custom autoscaler job も用意しています。
+
+`outbox-autoscaler` は Spanner の `OutboxJobs` を読み、以下の条件で Cloud Run Worker Pool の `manual_instance_count` を更新します。
+
+- ready backlog が 0 かつ processing も 0 なら `AUTOSCALER_MIN_WORKERS` まで戻す
+- ready backlog が `AUTOSCALER_SCALE_UP_BACKLOG` 以上なら `AUTOSCALER_SCALE_UP_WORKERS` まで増やす
+- ready backlog が `AUTOSCALER_MAX_BACKLOG` 以上なら `AUTOSCALER_MAX_WORKERS` まで増やす
+- backlog の最古 `next_attempt_at` が `AUTOSCALER_OLDEST_BACKLOG_AGE` を超えたら1段階増やす
+
+手動実行する場合は以下です。
+
+```bash
+gcloud run jobs execute gcp-outbox-poc-outbox-autoscaler \
+  --project="${PROJECT_ID}" \
+  --region="${REGION}" \
+  --wait
+```
+
+Terraform の `enable_scheduler=true` を指定すると Cloud Scheduler で毎分実行できます。default は `false` なので、PoC deploy 直後に勝手に scale 操作は行いません。
+
+この方式は Pub/Sub / Cloud Tasks を増やさずに Worker Pool の台数調整を試せる一方、完全な managed autoscaling ではありません。Scheduler 間隔、Cloud Run Admin API の権限、scale up / down のしきい値設計、暴走防止の上限値は運用設計が必要です。
 
 ## Deploy手順の概要
 

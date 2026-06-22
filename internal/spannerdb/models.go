@@ -98,3 +98,9 @@ type PaymentWebhookResult struct {
 	MerchantWebhookJobID string `json:"merchantWebhookJobId"`
 	MailJobID            string `json:"mailJobId"`
 }
+
+type OutboxBacklogStats struct {
+	ReadyCount      int64
+	ProcessingCount int64
+	OldestReadyAt   *time.Time
+}

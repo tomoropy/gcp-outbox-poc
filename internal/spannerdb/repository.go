@@ -239,6 +239,62 @@ func (r *Repository) ClaimReadyJobs(ctx context.Context, workerID string, limit 
 	return jobs, nil
 }
 
+func (r *Repository) OutboxBacklogStats(ctx context.Context) (OutboxBacklogStats, error) {
+	now := time.Now()
+	readyStmt := spanner.Statement{
+		SQL: `SELECT COUNT(*) AS ReadyCount, MIN(NextAttemptAt) AS OldestReadyAt
+FROM OutboxJobs
+WHERE Status IN UNNEST(@statuses)
+  AND NextAttemptAt <= @now
+  AND (LockedUntil IS NULL OR LockedUntil < @now)`,
+		Params: map[string]any{
+			"statuses": []string{OutboxStatusPending, OutboxStatusRetry},
+			"now":      now,
+		},
+	}
+	iter := r.client.Single().Query(ctx, readyStmt)
+	row, err := iter.Next()
+	iter.Stop()
+	if err != nil {
+		return OutboxBacklogStats{}, err
+	}
+	var readyCount int64
+	var oldestReadyAt spanner.NullTime
+	if err := row.Columns(&readyCount, &oldestReadyAt); err != nil {
+		return OutboxBacklogStats{}, err
+	}
+
+	processingStmt := spanner.Statement{
+		SQL: `SELECT COUNT(*) AS ProcessingCount
+FROM OutboxJobs
+WHERE Status = @status
+  AND LockedUntil >= @now`,
+		Params: map[string]any{
+			"status": OutboxStatusProcessing,
+			"now":    now,
+		},
+	}
+	iter = r.client.Single().Query(ctx, processingStmt)
+	row, err = iter.Next()
+	iter.Stop()
+	if err != nil {
+		return OutboxBacklogStats{}, err
+	}
+	var processingCount int64
+	if err := row.Columns(&processingCount); err != nil {
+		return OutboxBacklogStats{}, err
+	}
+
+	stats := OutboxBacklogStats{
+		ReadyCount:      readyCount,
+		ProcessingCount: processingCount,
+	}
+	if oldestReadyAt.Valid {
+		stats.OldestReadyAt = &oldestReadyAt.Time
+	}
+	return stats, nil
+}
+
 func (r *Repository) readyJobIDs(ctx context.Context, limit int) ([]string, error) {
 	stmt := spanner.Statement{
 		SQL: `SELECT JobId

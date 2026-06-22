@@ -107,6 +107,18 @@ resource "google_project_iam_member" "job_metric_writer" {
   member  = "serviceAccount:${google_service_account.job.email}"
 }
 
+resource "google_project_iam_member" "job_run_developer" {
+  project = var.project_id
+  role    = "roles/run.developer"
+  member  = "serviceAccount:${google_service_account.job.email}"
+}
+
+resource "google_service_account_iam_member" "job_worker_act_as" {
+  service_account_id = google_service_account.worker.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.job.email}"
+}
+
 resource "google_cloud_run_v2_service" "api" {
   name                = "${local.name}-api"
   location            = var.region
@@ -294,6 +306,72 @@ resource "google_cloud_run_v2_job" "outbox_cleanup" {
   }
 }
 
+resource "google_cloud_run_v2_job" "outbox_autoscaler" {
+  name                = "${local.name}-outbox-autoscaler"
+  location            = var.region
+  deletion_protection = false
+
+  template {
+    template {
+      service_account = google_service_account.job.email
+
+      containers {
+        image   = var.image
+        command = ["/app/outbox_autoscaler"]
+
+        env {
+          name  = "GCP_PROJECT_ID"
+          value = var.project_id
+        }
+        env {
+          name  = "SPANNER_INSTANCE_ID"
+          value = google_spanner_instance.main.name
+        }
+        env {
+          name  = "SPANNER_DATABASE_ID"
+          value = google_spanner_database.main.name
+        }
+        env {
+          name  = "AUTOSCALER_REGION"
+          value = var.region
+        }
+        env {
+          name  = "AUTOSCALER_WORKER_POOL"
+          value = google_cloud_run_v2_worker_pool.worker.name
+        }
+        env {
+          name  = "AUTOSCALER_MIN_WORKERS"
+          value = tostring(var.autoscaler_min_workers)
+        }
+        env {
+          name  = "AUTOSCALER_MAX_WORKERS"
+          value = tostring(var.autoscaler_max_workers)
+        }
+        env {
+          name  = "AUTOSCALER_SCALE_UP_BACKLOG"
+          value = tostring(var.autoscaler_scale_up_backlog)
+        }
+        env {
+          name  = "AUTOSCALER_SCALE_UP_WORKERS"
+          value = tostring(var.autoscaler_scale_up_workers)
+        }
+        env {
+          name  = "AUTOSCALER_MAX_BACKLOG"
+          value = tostring(var.autoscaler_max_backlog)
+        }
+        env {
+          name  = "AUTOSCALER_OLDEST_BACKLOG_AGE"
+          value = var.autoscaler_oldest_backlog_age
+        }
+        env {
+          name  = "AUTOSCALER_DRY_RUN"
+          value = tostring(var.autoscaler_dry_run)
+        }
+      }
+    }
+  }
+}
+
 resource "google_service_account" "scheduler" {
   count        = var.enable_scheduler ? 1 : 0
   account_id   = "outbox-poc-scheduler"
@@ -325,6 +403,24 @@ resource "google_cloud_scheduler_job" "expire_billing" {
   http_target {
     http_method = "POST"
     uri         = "https://${var.region}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${var.project_id}/jobs/${google_cloud_run_v2_job.expire_billing.name}:run"
+
+    oauth_token {
+      service_account_email = google_service_account.scheduler[0].email
+    }
+  }
+}
+
+resource "google_cloud_scheduler_job" "outbox_autoscaler" {
+  count       = var.enable_scheduler ? 1 : 0
+  name        = "${local.name}-outbox-autoscaler"
+  region      = var.region
+  schedule    = "* * * * *"
+  time_zone   = "Asia/Tokyo"
+  description = "Run outbox backlog autoscaler"
+
+  http_target {
+    http_method = "POST"
+    uri         = "https://${var.region}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${var.project_id}/jobs/${google_cloud_run_v2_job.outbox_autoscaler.name}:run"
 
     oauth_token {
       service_account_email = google_service_account.scheduler[0].email
