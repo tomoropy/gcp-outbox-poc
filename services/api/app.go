@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -24,6 +25,7 @@ func (a *App) Handler() http.Handler {
 		httpx.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("POST /billings", a.createBilling)
+	mux.HandleFunc("POST /bank/webhooks/payment", a.paymentWebhook)
 	return mux
 }
 
@@ -33,6 +35,7 @@ type createBillingRequest struct {
 	DueInSeconds  int64  `json:"dueInSeconds"`
 	WebhookURL    string `json:"webhookUrl"`
 	WebhookSecret string `json:"webhookSecret"`
+	NotifyEmail   string `json:"notifyEmail"`
 }
 
 func (a *App) createBilling(w http.ResponseWriter, r *http.Request) {
@@ -50,9 +53,10 @@ func (a *App) createBilling(w http.ResponseWriter, r *http.Request) {
 	}
 
 	billing, job, err := a.repo.CreateBillingWithOutbox(r.Context(), spannerdb.Tenant{
-		TenantID:      req.TenantID,
-		WebhookURL:    req.WebhookURL,
-		WebhookSecret: req.WebhookSecret,
+		TenantID:          req.TenantID,
+		WebhookURL:        req.WebhookURL,
+		WebhookSecret:     req.WebhookSecret,
+		NotificationEmail: req.NotifyEmail,
 	}, spannerdb.Billing{
 		TenantID: req.TenantID,
 		Amount:   req.Amount,
@@ -67,4 +71,45 @@ func (a *App) createBilling(w http.ResponseWriter, r *http.Request) {
 		"billingId":   billing.BillingID,
 		"outboxJobId": job.JobID,
 	})
+}
+
+type paymentWebhookRequest struct {
+	Provider  string `json:"provider"`
+	EventID   string `json:"eventId"`
+	BillingID string `json:"billingId"`
+	Amount    int64  `json:"amount"`
+}
+
+func (a *App) paymentWebhook(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		httpx.Error(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	var req paymentWebhookRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		httpx.Error(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Provider == "" {
+		req.Provider = "demo-bank"
+	}
+	if req.EventID == "" || req.BillingID == "" {
+		httpx.Error(w, http.StatusBadRequest, "eventId and billingId are required")
+		return
+	}
+
+	result, err := a.repo.ProcessPaymentNotification(r.Context(), spannerdb.IncomingPaymentNotification{
+		Provider:        req.Provider,
+		ProviderEventID: req.EventID,
+		BillingID:       req.BillingID,
+		Amount:          req.Amount,
+		RawPayload:      raw,
+	})
+	if err != nil {
+		slog.Error("failed to process payment webhook", slog.String("error", err.Error()))
+		httpx.Error(w, http.StatusInternalServerError, "failed to process payment webhook")
+		return
+	}
+	httpx.JSON(w, http.StatusAccepted, result)
 }

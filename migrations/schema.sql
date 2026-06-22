@@ -2,6 +2,7 @@ CREATE TABLE Tenants (
   TenantId STRING(64) NOT NULL,
   WebhookUrl STRING(MAX) NOT NULL,
   WebhookSecret STRING(MAX),
+  NotificationEmail STRING(MAX),
   CreatedAt TIMESTAMP NOT NULL
 ) PRIMARY KEY (TenantId);
 
@@ -50,3 +51,31 @@ CREATE TABLE WebhookDeliveries (
 
 CREATE INDEX WebhookDeliveriesByJob
 ON WebhookDeliveries(JobId, CreatedAt);
+
+CREATE TABLE IncomingPaymentNotifications (
+  Provider STRING(64) NOT NULL,
+  ProviderEventId STRING(128) NOT NULL,
+  BillingId STRING(36) NOT NULL,
+  TenantId STRING(64) NOT NULL,
+  Amount INT64 NOT NULL,
+  Status STRING(32) NOT NULL,
+  RawPayload STRING(MAX) NOT NULL,
+  ReceivedAt TIMESTAMP NOT NULL,
+  ProcessedAt TIMESTAMP
+) PRIMARY KEY (Provider, ProviderEventId);
+
+CREATE INDEX IncomingPaymentNotificationsByBilling
+ON IncomingPaymentNotifications(BillingId, ReceivedAt);
+
+CREATE TABLE MailDeliveries (
+  MailId STRING(36) NOT NULL,
+  JobId STRING(36) NOT NULL,
+  BillingId STRING(36) NOT NULL,
+  ToEmail STRING(MAX) NOT NULL,
+  Subject STRING(MAX) NOT NULL,
+  Body STRING(MAX) NOT NULL,
+  CreatedAt TIMESTAMP NOT NULL
+) PRIMARY KEY (MailId);
+
+CREATE INDEX MailDeliveriesByJob
+ON MailDeliveries(JobId, CreatedAt);

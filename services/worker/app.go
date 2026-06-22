@@ -91,11 +91,31 @@ func (a *App) tick(ctx context.Context) error {
 
 func (a *App) process(ctx context.Context, job *spannerdb.OutboxJob) error {
 	switch job.JobType {
-	case spannerdb.JobTypeWebhookBillingCreated, spannerdb.JobTypeWebhookBillingExpired:
+	case spannerdb.JobTypeWebhookBillingCreated, spannerdb.JobTypeWebhookBillingExpired, spannerdb.JobTypeWebhookBillingPaid:
 		return a.sendWebhook(ctx, job)
+	case spannerdb.JobTypeMailBillingPaid:
+		return a.sendMail(ctx, job)
 	default:
 		return fmt.Errorf("unknown job type: %s", job.JobType)
 	}
+}
+
+func (a *App) sendMail(ctx context.Context, job *spannerdb.OutboxJob) error {
+	var payload spannerdb.MailJobPayload
+	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		return fmt.Errorf("decode mail payload: %w", err)
+	}
+	if payload.ToEmail == "" {
+		return fmt.Errorf("mail toEmail is required")
+	}
+	if err := a.repo.RecordMailDelivery(ctx, job.JobID, payload.BillingID, payload.ToEmail, payload.Subject, payload.Body); err != nil {
+		return err
+	}
+	slog.Info("mail recorded",
+		slog.String("job_id", job.JobID),
+		slog.String("billing_id", payload.BillingID),
+		slog.String("to_email", payload.ToEmail))
+	return nil
 }
 
 func (a *App) sendWebhook(ctx context.Context, job *spannerdb.OutboxJob) error {

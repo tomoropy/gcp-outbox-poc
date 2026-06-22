@@ -11,6 +11,8 @@ import (
 	"cloud.google.com/go/spanner"
 	"github.com/google/uuid"
 	"google.golang.org/api/iterator"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type Repository struct {
@@ -46,9 +48,9 @@ func (r *Repository) UpsertTenant(ctx context.Context, tenant Tenant) error {
 	}
 	_, err := r.client.Apply(ctx, []*spanner.Mutation{
 		spanner.InsertOrUpdate("Tenants", []string{
-			"TenantId", "WebhookUrl", "WebhookSecret", "CreatedAt",
+			"TenantId", "WebhookUrl", "WebhookSecret", "NotificationEmail", "CreatedAt",
 		}, []any{
-			tenant.TenantID, tenant.WebhookURL, tenant.WebhookSecret, tenant.CreatedAt,
+			tenant.TenantID, tenant.WebhookURL, tenant.WebhookSecret, tenant.NotificationEmail, tenant.CreatedAt,
 		}),
 	})
 	return err
@@ -103,9 +105,9 @@ func (r *Repository) CreateBillingWithOutbox(ctx context.Context, tenant Tenant,
 	_, err = r.client.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
 		tx.BufferWrite([]*spanner.Mutation{
 			spanner.InsertOrUpdate("Tenants", []string{
-				"TenantId", "WebhookUrl", "WebhookSecret", "CreatedAt",
+				"TenantId", "WebhookUrl", "WebhookSecret", "NotificationEmail", "CreatedAt",
 			}, []any{
-				tenant.TenantID, tenant.WebhookURL, tenant.WebhookSecret, tenant.CreatedAt,
+				tenant.TenantID, tenant.WebhookURL, tenant.WebhookSecret, tenant.NotificationEmail, tenant.CreatedAt,
 			}),
 			spanner.Insert("Billings", []string{
 				"BillingId", "TenantId", "Amount", "Status", "DueAt", "CreatedAt", "UpdatedAt",
@@ -120,6 +122,96 @@ func (r *Repository) CreateBillingWithOutbox(ctx context.Context, tenant Tenant,
 		return nil, nil, err
 	}
 	return &billing, job, nil
+}
+
+func (r *Repository) ProcessPaymentNotification(ctx context.Context, incoming IncomingPaymentNotification) (*PaymentWebhookResult, error) {
+	now := time.Now()
+	if incoming.ReceivedAt.IsZero() {
+		incoming.ReceivedAt = now
+	}
+	if incoming.Status == "" {
+		incoming.Status = "processed"
+	}
+	if len(incoming.RawPayload) == 0 {
+		incoming.RawPayload = json.RawMessage("{}")
+	}
+
+	result := &PaymentWebhookResult{
+		Accepted:  true,
+		BillingID: incoming.BillingID,
+	}
+
+	_, err := r.client.ReadWriteTransaction(ctx, func(ctx context.Context, tx *spanner.ReadWriteTransaction) error {
+		_, err := tx.ReadRow(ctx, "IncomingPaymentNotifications", spanner.Key{incoming.Provider, incoming.ProviderEventID}, []string{"Provider"})
+		if err == nil {
+			result.Duplicate = true
+			return nil
+		}
+		if status.Code(err) != codes.NotFound {
+			return err
+		}
+
+		billing, err := readBillingInTx(ctx, tx, incoming.BillingID)
+		if err != nil {
+			return err
+		}
+		tenant, err := readTenantInTx(ctx, tx, billing.TenantID)
+		if err != nil {
+			return err
+		}
+
+		incoming.TenantID = billing.TenantID
+		if incoming.Amount == 0 {
+			incoming.Amount = billing.Amount
+		}
+		processedAt := now
+		incoming.ProcessedAt = &processedAt
+
+		mutations := []*spanner.Mutation{
+			spanner.Insert("IncomingPaymentNotifications", []string{
+				"Provider", "ProviderEventId", "BillingId", "TenantId", "Amount", "Status", "RawPayload", "ReceivedAt", "ProcessedAt",
+			}, []any{
+				incoming.Provider, incoming.ProviderEventID, incoming.BillingID, incoming.TenantID, incoming.Amount, incoming.Status, string(incoming.RawPayload), incoming.ReceivedAt, incoming.ProcessedAt,
+			}),
+		}
+
+		if billing.Status == BillingStatusPaid {
+			result.Ignored = true
+			tx.BufferWrite(mutations)
+			return nil
+		}
+
+		billing.Status = BillingStatusPaid
+		billing.UpdatedAt = now
+		mutations = append(mutations, spanner.Update("Billings", []string{
+			"BillingId", "TenantId", "Amount", "Status", "DueAt", "CreatedAt", "UpdatedAt",
+		}, []any{
+			billing.BillingID, billing.TenantID, billing.Amount, billing.Status, billing.DueAt, billing.CreatedAt, billing.UpdatedAt,
+		}))
+
+		webhookJob, err := webhookOutboxJob(JobTypeWebhookBillingPaid, *billing, tenant, "billing.paid", now)
+		if err != nil {
+			return err
+		}
+		mutations = append(mutations, outboxInsertMutation(webhookJob))
+		result.MerchantWebhookJobID = webhookJob.JobID
+
+		if tenant.NotificationEmail != "" {
+			mailJob, err := mailOutboxJob(*billing, tenant.NotificationEmail, now)
+			if err != nil {
+				return err
+			}
+			mutations = append(mutations, outboxInsertMutation(mailJob))
+			result.MailJobID = mailJob.JobID
+		}
+
+		tx.BufferWrite(mutations)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (r *Repository) ClaimReadyJobs(ctx context.Context, workerID string, limit int, lease time.Duration) ([]*OutboxJob, error) {
@@ -378,6 +470,18 @@ func (r *Repository) RecordWebhookDelivery(ctx context.Context, jobID, billingID
 	return err
 }
 
+func (r *Repository) RecordMailDelivery(ctx context.Context, jobID, billingID, toEmail, subject, body string) error {
+	now := time.Now()
+	_, err := r.client.Apply(ctx, []*spanner.Mutation{
+		spanner.Insert("MailDeliveries", []string{
+			"MailId", "JobId", "BillingId", "ToEmail", "Subject", "Body", "CreatedAt",
+		}, []any{
+			uuid.NewString(), jobID, billingID, toEmail, subject, body, now,
+		}),
+	})
+	return err
+}
+
 func readJobInTx(ctx context.Context, tx *spanner.ReadWriteTransaction, jobID string) (*OutboxJob, error) {
 	row, err := tx.ReadRow(ctx, "OutboxJobs", spanner.Key{jobID}, []string{
 		"JobId", "JobType", "AggregateId", "Payload", "Status", "AttemptCount", "MaxAttempts", "NextAttemptAt", "LockedBy", "LockedUntil", "LastError", "CreatedAt", "UpdatedAt", "CompletedAt",
@@ -400,6 +504,28 @@ func readBillingInTx(ctx context.Context, tx *spanner.ReadWriteTransaction, bill
 		return nil, err
 	}
 	return &billing, nil
+}
+
+func readTenantInTx(ctx context.Context, tx *spanner.ReadWriteTransaction, tenantID string) (*Tenant, error) {
+	row, err := tx.ReadRow(ctx, "Tenants", spanner.Key{tenantID}, []string{
+		"TenantId", "WebhookUrl", "WebhookSecret", "NotificationEmail", "CreatedAt",
+	})
+	if err != nil {
+		return nil, err
+	}
+	var tenant Tenant
+	var webhookSecret spanner.NullString
+	var notificationEmail spanner.NullString
+	if err := row.Columns(&tenant.TenantID, &tenant.WebhookURL, &webhookSecret, &notificationEmail, &tenant.CreatedAt); err != nil {
+		return nil, err
+	}
+	if webhookSecret.Valid {
+		tenant.WebhookSecret = webhookSecret.StringVal
+	}
+	if notificationEmail.Valid {
+		tenant.NotificationEmail = notificationEmail.StringVal
+	}
+	return &tenant, nil
 }
 
 func decodeJob(row *spanner.Row) (*OutboxJob, error) {
@@ -509,6 +635,59 @@ func (r *Repository) backoff(attempt int64) time.Duration {
 		return r.backoffMax
 	}
 	return delay
+}
+
+func webhookOutboxJob(jobType string, billing Billing, tenant *Tenant, event string, now time.Time) (*OutboxJob, error) {
+	payload, err := json.Marshal(WebhookJobPayload{
+		WebhookURL:    tenant.WebhookURL,
+		WebhookSecret: tenant.WebhookSecret,
+		Body: WebhookPayload{
+			Event:       event,
+			BillingID:   billing.BillingID,
+			TenantID:    billing.TenantID,
+			Amount:      billing.Amount,
+			TriggeredAt: now,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &OutboxJob{
+		JobID:         uuid.NewString(),
+		JobType:       jobType,
+		AggregateID:   billing.BillingID,
+		Payload:       payload,
+		Status:        OutboxStatusPending,
+		AttemptCount:  0,
+		MaxAttempts:   10,
+		NextAttemptAt: now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}, nil
+}
+
+func mailOutboxJob(billing Billing, toEmail string, now time.Time) (*OutboxJob, error) {
+	payload, err := json.Marshal(MailJobPayload{
+		ToEmail:   toEmail,
+		Subject:   "Payment received",
+		Body:      fmt.Sprintf("Billing %s has been paid. Amount: %d", billing.BillingID, billing.Amount),
+		BillingID: billing.BillingID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &OutboxJob{
+		JobID:         uuid.NewString(),
+		JobType:       JobTypeMailBillingPaid,
+		AggregateID:   billing.BillingID,
+		Payload:       payload,
+		Status:        OutboxStatusPending,
+		AttemptCount:  0,
+		MaxAttempts:   10,
+		NextAttemptAt: now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}, nil
 }
 
 func PermanentError(msg string) error {

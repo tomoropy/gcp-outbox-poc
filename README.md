@@ -9,6 +9,7 @@ Cloud Run Worker Pools + Spanner + Outbox pattern の検証用PoCです。
 - SpannerでOutbox jobのclaim / lease / retry / failed / completedを表現できるか
 - 複数workerでも同じjobを二重claimしないか
 - Cloud Run Jobsで期限切れbilling検出とcleanupを担えるか
+- 金融機関からの収納通知を受け、DB更新と加盟店通知/mail enqueueを同一transactionで扱えるか
 
 ## 構成
 
@@ -48,7 +49,20 @@ Billingを作成します。`webhookUrl`はworkerコンテナから見えるComp
 ```bash
 curl -X POST localhost:8080/billings \
   -H 'content-type: application/json' \
-  -d '{"tenantId":"tenant-demo","amount":1200,"dueInSeconds":3600,"webhookUrl":"http://simulator:8080/webhook"}'
+  -d '{"tenantId":"tenant-demo","amount":1200,"dueInSeconds":3600,"webhookUrl":"http://simulator:8080/webhook","notifyEmail":"merchant@example.com"}'
+```
+
+金融機関からの収納通知を模したwebhookを投入します。APIは通知を冪等に保存し、billingを`paid`へ更新し、加盟店向け`billing.paid` webhookとmail jobをOutboxへenqueueします。
+
+```bash
+BILLING_ID="$(curl -fsS -X POST localhost:8080/billings \
+  -H 'content-type: application/json' \
+  -d '{"tenantId":"tenant-demo","amount":1200,"dueInSeconds":3600,"webhookUrl":"http://simulator:8080/webhook","notifyEmail":"merchant@example.com"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["billingId"])')"
+
+curl -X POST localhost:8080/bank/webhooks/payment \
+  -H 'content-type: application/json' \
+  -d "{\"provider\":\"demo-bank\",\"eventId\":\"bank-event-001\",\"billingId\":\"${BILLING_ID}\",\"amount\":1200}"
 ```
 
 期限切れjobを手動実行します。
@@ -74,6 +88,7 @@ scripts/local-outbox-scenarios.sh
 - retry: simulatorが最初の2回だけ503を返し、workerがbackoff後に再実行する
 - multi-worker: `--scale worker=3` で10件処理して、同じjobが二重deliveryされない
 - lease-timeout: workerがclaim後に停止しても、lease期限切れ後に別workerが再取得する
+- payment-webhook: 同じ収納通知eventを2回送っても二重処理せず、加盟店webhookとmailを1回ずつ処理する
 
 Spanner Emulatorだけを使ってGoを直接起動する場合は、`SPANNER_EMULATOR_HOST`を指定します。
 
@@ -146,5 +161,20 @@ SIMULATOR_URL=$(terraform output -raw simulator_url)
 curl -X POST "$API_URL/billings" \
   -H "authorization: Bearer $(gcloud auth print-identity-token)" \
   -H 'content-type: application/json' \
-  -d "{\"tenantId\":\"tenant-demo\",\"amount\":1200,\"dueInSeconds\":3600,\"webhookUrl\":\"$SIMULATOR_URL/webhook\"}"
+  -d "{\"tenantId\":\"tenant-demo\",\"amount\":1200,\"dueInSeconds\":3600,\"webhookUrl\":\"$SIMULATOR_URL/webhook\",\"notifyEmail\":\"merchant@example.com\"}"
+```
+
+収納通知も同じidentity token付きで叩けます。
+
+```bash
+BILLING_ID="$(curl -fsS -X POST "$API_URL/billings" \
+  -H "authorization: Bearer $(gcloud auth print-identity-token)" \
+  -H 'content-type: application/json' \
+  -d "{\"tenantId\":\"tenant-demo\",\"amount\":1200,\"dueInSeconds\":3600,\"webhookUrl\":\"$SIMULATOR_URL/webhook\",\"notifyEmail\":\"merchant@example.com\"}" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["billingId"])')"
+
+curl -X POST "$API_URL/bank/webhooks/payment" \
+  -H "authorization: Bearer $(gcloud auth print-identity-token)" \
+  -H 'content-type: application/json' \
+  -d "{\"provider\":\"demo-bank\",\"eventId\":\"bank-event-001\",\"billingId\":\"${BILLING_ID}\",\"amount\":1200}"
 ```
