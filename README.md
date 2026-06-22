@@ -285,6 +285,32 @@ curl -X POST "${API_URL}/bank/webhooks/payment" \
   -d "{\"provider\":\"demo-bank\",\"eventId\":\"bank-event-001\",\"billingId\":\"${BILLING_ID}\",\"amount\":1200}"
 ```
 
+## PoC終了時の停止・削除
+
+Cloud Run Service は min instances 0 で scale-to-zero できますが、Cloud Run Worker Pool は instance count が残っている限り常駐します。また、Cloud Spanner は instance を「停止」する操作がなく、100 processing units の instance が残っている限り idle でも課金されます。
+
+PoCをしばらく使わない場合は、継続課金を避けるため Terraform で削除します。
+
+```bash
+cd deploy/terraform
+terraform destroy \
+  -var="project_id=${PROJECT_ID}" \
+  -var="region=${REGION}" \
+  -var="image=${IMAGE}"
+```
+
+この操作で Spanner database / instance も削除されるため、PoC中に作成した data は消えます。再度試したい場合は、上の Deploy 手順を最初から実行すれば Artifact Registry、Spanner、Cloud Run resources を再作成できます。API enablement も Terraform 管理なので、destroy 後に各 API が disabled になっていても再作成時に有効化されます。
+
+Worker Pool だけ一時停止したい場合は、`worker_instance_count=0` を指定して apply します。ただしこの場合も Spanner は残るため、Spanner の課金は止まりません。
+
+```bash
+terraform apply \
+  -var="project_id=${PROJECT_ID}" \
+  -var="region=${REGION}" \
+  -var="image=${IMAGE}" \
+  -var="worker_instance_count=0"
+```
+
 ## CIで確認したいこと
 
 このrepositoryでは、以下を確認するとよいです。
