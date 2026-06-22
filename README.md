@@ -63,6 +63,18 @@ cleanup jobを手動実行します。
 docker compose run --rm outbox-cleanup
 ```
 
+retry / lease timeout / 複数worker競合をまとめて検証します。
+
+```bash
+scripts/local-outbox-scenarios.sh
+```
+
+このスクリプトでは以下を確認します。
+
+- retry: simulatorが最初の2回だけ503を返し、workerがbackoff後に再実行する
+- multi-worker: `--scale worker=3` で10件処理して、同じjobが二重deliveryされない
+- lease-timeout: workerがclaim後に停止しても、lease期限切れ後に別workerが再取得する
+
 Spanner Emulatorだけを使ってGoを直接起動する場合は、`SPANNER_EMULATOR_HOST`を指定します。
 
 ```bash
@@ -93,6 +105,7 @@ go run ./cmd/worker
 - `go test ./...`
 - `terraform fmt -check`
 - `terraform validate`
+- `docker compose config`
 - `docker build`
 
 GCPへdeployするCDは、Workload Identity Federation用のprovider/service accountを作ってから追加します。

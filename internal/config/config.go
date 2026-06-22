@@ -17,6 +17,10 @@ type Config struct {
 	WorkerBatchSize    int
 	WorkerPollInterval time.Duration
 	OutboxLease        time.Duration
+	OutboxBackoffBase  time.Duration
+	OutboxBackoffMax   time.Duration
+	WorkerHTTPTimeout  time.Duration
+	WorkerProcessDelay time.Duration
 
 	ExpireBillingLookback  time.Duration
 	OutboxCleanupRetention time.Duration
@@ -32,6 +36,10 @@ func Load() (Config, error) {
 		WorkerBatchSize:        getenvInt("WORKER_BATCH_SIZE", 10),
 		WorkerPollInterval:     getenvDuration("WORKER_POLL_INTERVAL", time.Second),
 		OutboxLease:            time.Duration(getenvInt("OUTBOX_LEASE_SECONDS", 60)) * time.Second,
+		OutboxBackoffBase:      getenvDuration("OUTBOX_BACKOFF_BASE", 2*time.Second),
+		OutboxBackoffMax:       getenvDuration("OUTBOX_BACKOFF_MAX", 1024*time.Second),
+		WorkerHTTPTimeout:      getenvDuration("WORKER_HTTP_TIMEOUT", 20*time.Second),
+		WorkerProcessDelay:     getenvDuration("WORKER_PROCESS_DELAY", 0),
 		ExpireBillingLookback:  getenvDuration("EXPIRE_BILLING_LOOKBACK", 24*time.Hour),
 		OutboxCleanupRetention: getenvDuration("OUTBOX_CLEANUP_RETENTION", 30*24*time.Hour),
 	}

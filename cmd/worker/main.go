@@ -26,7 +26,8 @@ func main() {
 	}
 	defer client.Close()
 
-	app := worker.New(spannerdb.NewRepository(client), cfg.WorkerID, cfg.WorkerBatchSize, cfg.WorkerPollInterval, cfg.OutboxLease)
+	repo := spannerdb.NewRepository(client).WithBackoff(cfg.OutboxBackoffBase, cfg.OutboxBackoffMax)
+	app := worker.New(repo, cfg.WorkerID, cfg.WorkerBatchSize, cfg.WorkerPollInterval, cfg.OutboxLease, cfg.WorkerHTTPTimeout, cfg.WorkerProcessDelay)
 	if err := app.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}

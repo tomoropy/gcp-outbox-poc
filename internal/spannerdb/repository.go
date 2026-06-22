@@ -14,11 +14,30 @@ import (
 )
 
 type Repository struct {
-	client *spanner.Client
+	client      *spanner.Client
+	backoffBase time.Duration
+	backoffMax  time.Duration
 }
 
 func NewRepository(client *spanner.Client) *Repository {
-	return &Repository{client: client}
+	return &Repository{
+		client:      client,
+		backoffBase: 2 * time.Second,
+		backoffMax:  1024 * time.Second,
+	}
+}
+
+func (r *Repository) WithBackoff(base, max time.Duration) *Repository {
+	if base > 0 {
+		r.backoffBase = base
+	}
+	if max > 0 {
+		r.backoffMax = max
+	}
+	if r.backoffMax < r.backoffBase {
+		r.backoffMax = r.backoffBase
+	}
+	return r
 }
 
 func (r *Repository) UpsertTenant(ctx context.Context, tenant Tenant) error {
@@ -138,7 +157,7 @@ WHERE Status IN UNNEST(@statuses)
 ORDER BY Status, NextAttemptAt
 LIMIT @limit`,
 		Params: map[string]any{
-			"statuses": []string{OutboxStatusPending, OutboxStatusRetry},
+			"statuses": []string{OutboxStatusPending, OutboxStatusRetry, OutboxStatusProcessing},
 			"limit":    int64(limit),
 		},
 	}
@@ -226,7 +245,7 @@ func (r *Repository) MarkRetry(ctx context.Context, jobID string, cause error) e
 			job.Status = OutboxStatusFailed
 		} else {
 			job.Status = OutboxStatusRetry
-			job.NextAttemptAt = now.Add(backoff(job.AttemptCount))
+			job.NextAttemptAt = now.Add(r.backoff(job.AttemptCount))
 		}
 		tx.BufferWrite([]*spanner.Mutation{outboxUpdateMutation(job)})
 		return nil
@@ -465,6 +484,9 @@ func outboxValues(job *OutboxJob) []any {
 }
 
 func isReady(job *OutboxJob, now time.Time) bool {
+	if job.Status == OutboxStatusProcessing {
+		return job.LockedUntil != nil && job.LockedUntil.Before(now)
+	}
 	if job.Status != OutboxStatusPending && job.Status != OutboxStatusRetry {
 		return false
 	}
@@ -477,12 +499,16 @@ func isReady(job *OutboxJob, now time.Time) bool {
 	return true
 }
 
-func backoff(attempt int64) time.Duration {
+func (r *Repository) backoff(attempt int64) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-	power := math.Min(float64(attempt), 10)
-	return time.Duration(math.Pow(2, power)) * time.Second
+	power := math.Min(float64(attempt-1), 10)
+	delay := time.Duration(math.Pow(2, power)) * r.backoffBase
+	if delay > r.backoffMax {
+		return r.backoffMax
+	}
+	return delay
 }
 
 func PermanentError(msg string) error {

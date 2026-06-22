@@ -20,16 +20,18 @@ type App struct {
 	pollInterval time.Duration
 	lease        time.Duration
 	httpClient   *http.Client
+	processDelay time.Duration
 }
 
-func New(repo *spannerdb.Repository, workerID string, batchSize int, pollInterval, lease time.Duration) *App {
+func New(repo *spannerdb.Repository, workerID string, batchSize int, pollInterval, lease, httpTimeout, processDelay time.Duration) *App {
 	return &App{
 		repo:         repo,
 		workerID:     workerID,
 		batchSize:    batchSize,
 		pollInterval: pollInterval,
 		lease:        lease,
-		httpClient:   &http.Client{Timeout: 20 * time.Second},
+		httpClient:   &http.Client{Timeout: httpTimeout},
+		processDelay: processDelay,
 	}
 }
 
@@ -58,6 +60,17 @@ func (a *App) tick(ctx context.Context) error {
 		return err
 	}
 	for _, job := range jobs {
+		if a.processDelay > 0 {
+			slog.Info("worker processing delay",
+				slog.String("worker_id", a.workerID),
+				slog.String("job_id", job.JobID),
+				slog.Duration("delay", a.processDelay))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(a.processDelay):
+			}
+		}
 		if err := a.process(ctx, job); err != nil {
 			slog.Warn("job failed, scheduling retry",
 				slog.String("job_id", job.JobID),
