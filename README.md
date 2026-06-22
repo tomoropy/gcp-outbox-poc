@@ -148,6 +148,36 @@ go run ./cmd/worker
 
 Load Balancer、Pub/Sub topic、Cloud Tasks queue は意図的に作成しません。
 
+## アーキテクチャ判断
+
+このPoCでは、Pub/Sub や Cloud Tasks を使わず、Spanner の Outbox table と Cloud Run Worker Pools を中心に構成しています。これは「queue service が不要」と断定するためではなく、現時点で想定している負荷・運用・認知負荷に対して、まずは小さい構成で十分かを検証するためです。
+
+### Pub/Sub / Cloud Tasks を使わない理由
+
+主な理由は以下です。
+
+- 通常時の request volume は、Worker Pool 1台 + Spanner polling で処理できる想定
+- campaign などによる瞬間的な request spike は、現時点では主要な前提にしない
+- Pub/Sub publish、subscription consumer、Outbox republish job、DLQ などを入れると、障害時の経路と監視対象が増える
+- Cloud Tasks を使う場合も、task enqueue / retry / DLQ / idempotency と Outbox の責務分担を設計する必要があり、PoC の主目的から外れやすい
+- 今回は「DB transaction と同時に確実に job を記録し、worker が安全に処理する」ことを中心に確認したい
+
+もちろん、将来的に大量 request や明確な burst traffic を前提にするなら、Pub/Sub や Cloud Tasks を組み合わせる選択肢はあります。その場合も、Outbox table を source of truth にして、Pub/Sub / Cloud Tasks は worker 起動や配送の acceleration layer として扱うのが安全です。
+
+### manual scale を選ぶ理由
+
+Cloud Run Service は request-driven に scale できますが、Cloud Run Worker Pools はこのPoC検証時点では backlog に応じた managed autoscaling を前提にしにくい結果でした。そのため、Worker Pool は `manual_instance_count` を基本にしています。
+
+このPoCでの基本方針は以下です。
+
+- 通常時は Worker Pool 1台で常駐させる
+- request spike は主要前提にしないため、常時大きめに構えない
+- backlog が増えた場合は、まず operator が明示的に `worker_instance_count` を増やせる
+- 「必要なら custom autoscaler job で増減もできる」ことを検証する
+- autoscaler は安全弁であり、最初から複雑な queue architecture を入れる理由にはしない
+
+つまり、このPoCの狙いは「完全自動でどこまでも scale する基盤」ではなく、「通常は単純な構成で運用し、必要な時だけ worker 数を増やせる余地を持つ」ことです。小さい構成から始め、実際の backlog / latency / retry spike を見て、Pub/Sub や Cloud Tasks が必要になったら追加する、という段階的な判断をしやすくしています。
+
 ## Worker Pool scalingの検証メモ
 
 このPoCでは、Worker Pool の instance 数を手動で増やした場合の水平処理を検証しています。
